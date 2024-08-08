@@ -1,0 +1,19 @@
+[package]
+name = "warmonger"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0.86"
+bytes = "1.7.1"
+clap = { version = "4.5.13", features = ["derive"] }
+color-eyre = "0.6.3"
+env_logger = "0.11.5"
+http-body-util = "0.1.2"
+hyper = { version = "1.4.1", features = ["http1", "server"] }
+hyper-util = { version = "0.1.7", features = ["tokio", "http1", "server"] }
+log = { version = "0.4.22", features = ["std"] }
+steamworks = "0.11.0"
+steamworks-sys = "0.11.0"
+tokio = { version = "1.39.2", features = ["full"] }
+tracing = "0.1.40"
