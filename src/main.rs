@@ -170,6 +170,10 @@ async fn parse_packet(state: &State, mut msg: Bytes, peer: SocketAddr) {
             trace!("incoming heartbeat from {}", peer);
 
             let steamid = msg.get_u64();
+            if steamid == 0 {
+                return;
+            };
+
             let info = get_str(&mut msg);
 
             let servers = state.servers.read().await;
