@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    fmt::Write,
     io::{Cursor, Read},
     net::{Ipv4Addr, SocketAddr},
     ptr::null_mut,
@@ -44,7 +45,7 @@ struct Args {
 
 #[derive(Debug)]
 struct State {
-    servers: RwLock<HashMap<u64, KnownServer>>,
+    servers: RwLock<HashMap<u64, Mutex<KnownServer>>>,
 }
 
 #[tokio::main]
@@ -141,20 +142,25 @@ async fn serve_http(
 
     buf.put_u16(servers.len() as u16);
 
-    // .. dump server info
+    for (id, server) in servers.iter() {
+        let s = server.lock().await;
+        buf.put_u64(*id);
+        buf.write_str(&s.info).unwrap();
+        buf.put_u8(0);
+    }
 
     return Ok(Response::new(Full::new(buf.into())));
 }
 
 async fn parse_packet(state: &State, mut msg: Bytes, peer: SocketAddr) {
-    dbg!(peer);
+    dbg!(&msg);
     if msg.remaining() < 8 {
         trace!("short message from {}", peer);
         return;
     }
 
     // magic bytes
-    if msg.get(..7).unwrap() != b"warfork" {
+    if get_str(&mut msg) != "warfork" {
         return;
     }
 
@@ -164,38 +170,26 @@ async fn parse_packet(state: &State, mut msg: Bytes, peer: SocketAddr) {
             trace!("incoming heartbeat from {}", peer);
 
             let steamid = msg.get_u64();
-            let mapname = get_str(&mut msg);
-
-            let current_players = msg.get_u16();
-            let max_players = msg.get_u16();
-            let gametype = get_str(&mut msg);
-            let map = get_str(&mut msg);
-
-            let info = ServerInfo {
-                mapname,
-                current_players,
-                max_players,
-                gametype,
-                map,
-            };
+            let info = get_str(&mut msg);
 
             let servers = state.servers.read().await;
 
             match servers.get(&steamid) {
-                Some(s) => {
-                    *s.last_heartbeat.lock().await = SystemTime::now();
-                    *s.info.lock().await = info;
+                Some(smx) => {
+                    let mut s = smx.lock().await;
+                    s.last_heartbeat = SystemTime::now();
+                    s.info = info;
                 }
                 None => {
                     drop(servers);
 
                     let entry = KnownServer {
                         owner: peer.clone(),
-                        last_heartbeat: Mutex::new(SystemTime::now()),
-                        info: Mutex::new(info),
+                        last_heartbeat: SystemTime::now(),
+                        info,
                     };
                     let mut servers = state.servers.write().await;
-                    servers.insert(steamid, entry);
+                    servers.insert(steamid, Mutex::new(entry));
 
                     // TODO spawn a thread here to periodically connect to it and check
                     // the last heartbeat time
@@ -208,13 +202,15 @@ async fn parse_packet(state: &State, mut msg: Bytes, peer: SocketAddr) {
             let steamid = msg.get_u64();
             let mut servers = state.servers.write().await;
 
-            if let Some(server) = servers.get(&steamid) {
+            if let Some(smx) = servers.get(&steamid) {
+                let server = smx.lock().await;
                 if server.owner != peer {
                     trace!("{} tried to remove a server they didn't create!", peer);
                     return;
                 }
 
                 info!("dropping server {} owned by {}", steamid, peer);
+                drop(server);
                 servers.remove(&steamid);
             } else {
                 trace!("{} tried to remove a server that doesn't exist", peer);
@@ -223,20 +219,9 @@ async fn parse_packet(state: &State, mut msg: Bytes, peer: SocketAddr) {
         _ => {}
     }
 }
-
-#[derive(Debug)]
-struct ServerInfo {
-    mapname: String,
-
-    current_players: u16,
-    max_players: u16,
-    gametype: String,
-    map: String,
-}
-
 #[derive(Debug)]
 struct KnownServer {
     owner: SocketAddr,
-    last_heartbeat: Mutex<SystemTime>,
-    info: Mutex<ServerInfo>,
+    last_heartbeat: SystemTime,
+    info: String,
 }
