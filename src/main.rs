@@ -36,6 +36,10 @@ use tokio::{
     sync::{Mutex, RwLock},
     task,
 };
+use track::track_thread;
+
+mod consts;
+mod track;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -45,7 +49,7 @@ struct Args {
 
 #[derive(Debug)]
 struct State {
-    servers: RwLock<HashMap<u64, Mutex<KnownServer>>>,
+    servers: RwLock<HashMap<u64, Arc<Mutex<KnownServer>>>>,
 }
 
 #[tokio::main]
@@ -87,7 +91,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let state = state1.clone();
 
             task::spawn(async move {
-                parse_packet(&state, buf[..n].to_vec().into(), peer).await;
+                parse_packet(state, buf[..n].to_vec().into(), peer).await;
             });
         }
     };
@@ -152,7 +156,7 @@ async fn serve_http(
     return Ok(Response::new(Full::new(buf.into())));
 }
 
-async fn parse_packet(state: &State, mut msg: Bytes, peer: SocketAddr) {
+async fn parse_packet(state: Arc<State>, mut msg: Bytes, peer: SocketAddr) {
     dbg!(&msg);
     if msg.remaining() < 8 {
         trace!("short message from {}", peer);
@@ -171,6 +175,7 @@ async fn parse_packet(state: &State, mut msg: Bytes, peer: SocketAddr) {
 
             let steamid = msg.get_u64();
             if steamid == 0 {
+                trace!("invalid steamid from {}", peer);
                 return;
             };
 
@@ -193,10 +198,13 @@ async fn parse_packet(state: &State, mut msg: Bytes, peer: SocketAddr) {
                         info,
                     };
                     let mut servers = state.servers.write().await;
-                    servers.insert(steamid, Mutex::new(entry));
+                    let arc = Arc::new(Mutex::new(entry));
+                    servers.insert(steamid, arc.clone());
 
-                    // TODO spawn a thread here to periodically connect to it and check
-                    // the last heartbeat time
+                    let s = state.clone();
+                    task::spawn(async move {
+                        track_thread(s, steamid, arc).await;
+                    });
                 }
             };
         }
